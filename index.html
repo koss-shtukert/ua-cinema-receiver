@@ -2,19 +2,12 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>UA Cinema Cast Receiver</title>
+  <title>UA Cinema</title>
   <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
     body { margin: 0; background: #000; overflow: hidden; }
-    video {
-      width: 100%;
-      height: 100%;
-      position: absolute;
-      top: 0;
-      left: 0;
-      background: #000;
-    }
+    video { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
   </style>
 </head>
 <body>
@@ -24,120 +17,41 @@
     const context = cast.framework.CastReceiverContext.getInstance();
     const playerManager = context.getPlayerManager();
     const video = document.getElementById('media');
-
-    let hlsInstance = null;
-    let currentMediaInfo = null;
+    let hls = null;
 
     playerManager.setMessageInterceptor(
       cast.framework.messages.MessageType.LOAD,
-      (loadRequestData) => {
-        const media = loadRequestData.media;
-        const url = media.contentUrl || media.contentId;
+      (req) => {
+        const url = req.media.contentUrl || req.media.contentId;
+        if (!url) return req;
 
-        if (!url || (!url.includes('.m3u8') && media.contentType !== 'application/x-mpegURL')) {
-          return loadRequestData;
-        }
+        if (hls) { hls.destroy(); hls = null; }
 
-        if (!Hls.isSupported()) {
-          // Fallback: try native
+        if (Hls.isSupported() && url.includes('.m3u8')) {
+          hls = new Hls();
+          hls.loadSource(url);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+        } else {
           video.src = url;
           video.play();
-          return null;
-        }
-
-        // Destroy previous
-        if (hlsInstance) {
-          hlsInstance.destroy();
-          hlsInstance = null;
-        }
-
-        currentMediaInfo = media;
-
-        const hls = new Hls({
-          xhrSetup: (xhr) => {
-            xhr.setRequestHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-          }
-        });
-
-        hls.loadSource(url);
-        hls.attachMedia(video);
-        hlsInstance = hls;
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play();
-        });
-
-        hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            console.error('HLS error:', data.type, data.details);
-            hls.destroy();
-            hlsInstance = null;
-          }
-        });
-
-        // Don't let CAF handle loading - we do it ourselves
-        return null;
-      }
-    );
-
-    // Handle PAUSE from sender
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.PAUSE,
-      (requestData) => {
-        video.pause();
-        return null;
-      }
-    );
-
-    // Handle PLAY from sender
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.PLAY,
-      (requestData) => {
-        video.play();
-        return null;
-      }
-    );
-
-    // Handle SEEK from sender
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.SEEK,
-      (requestData) => {
-        if (requestData.currentTime != null) {
-          video.currentTime = requestData.currentTime;
         }
         return null;
       }
     );
 
-    // Handle STOP from sender
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.STOP,
-      (requestData) => {
-        if (hlsInstance) {
-          hlsInstance.destroy();
-          hlsInstance = null;
-        }
+    // Custom namespace for controls from sender
+    const NS = 'urn:x-cast:ua.cinema.control';
+    context.addCustomMessageListener(NS, (event) => {
+      const data = event.data;
+      if (data.type === 'PAUSE') video.pause();
+      else if (data.type === 'PLAY') video.play();
+      else if (data.type === 'SEEK') video.currentTime += (data.seconds || 0);
+      else if (data.type === 'STOP') {
+        if (hls) { hls.destroy(); hls = null; }
         video.src = '';
-        video.load();
-        return null;
       }
-    );
-
-    // Handle VOLUME from sender
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.SET_VOLUME,
-      (requestData) => {
-        if (requestData.volume) {
-          if (requestData.volume.level != null) {
-            video.volume = requestData.volume.level;
-          }
-          if (requestData.volume.muted != null) {
-            video.muted = requestData.volume.muted;
-          }
-        }
-        return null;
-      }
-    );
+    });
 
     context.start();
   </script>
