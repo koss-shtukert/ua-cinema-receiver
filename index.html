@@ -7,70 +7,139 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
     body { margin: 0; background: #000; overflow: hidden; }
-    cast-media-player { width: 100%; height: 100%; }
+    video {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: #000;
+    }
   </style>
 </head>
 <body>
-  <cast-media-player></cast-media-player>
+  <video id="media" autoplay></video>
 
   <script>
     const context = cast.framework.CastReceiverContext.getInstance();
     const playerManager = context.getPlayerManager();
+    const video = document.getElementById('media');
 
-    playerManager.setMediaPlaybackInfoHandler((loadRequest, playbackConfig) => {
-      if (!Hls.isSupported()) return playbackConfig;
+    let hlsInstance = null;
+    let currentMediaInfo = null;
 
-      const url = loadRequest.media.contentUrl || loadRequest.media.contentId || '';
-      if (!url.includes('.m3u8') && loadRequest.media.contentType !== 'application/x-mpegURL') {
-        return playbackConfig;
-      }
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.LOAD,
+      (loadRequestData) => {
+        const media = loadRequestData.media;
+        const url = media.contentUrl || media.contentId;
 
-      playbackConfig.manifestHandler = null;
-      playbackConfig.segmentHandler = null;
-      playbackConfig.licenseHandler = null;
-
-      const player = document.querySelector('cast-media-player');
-      const video = player.getMediaElement();
-
-      if (window._hlsInstance) {
-        window._hlsInstance.destroy();
-        window._hlsInstance = null;
-      }
-
-      const hls = new Hls({
-        xhrSetup: (xhr) => {
-          xhr.setRequestHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        if (!url || (!url.includes('.m3u8') && media.contentType !== 'application/x-mpegURL')) {
+          return loadRequestData;
         }
-      });
 
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      window._hlsInstance = hls;
-
-      hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          console.error('HLS fatal error:', data.type, data.details);
-          hls.destroy();
-          window._hlsInstance = null;
+        if (!Hls.isSupported()) {
+          // Fallback: try native
+          video.src = url;
+          video.play();
+          return null;
         }
-      });
 
-      // Tell CAF not to load the source itself
-      playbackConfig.autoResumeDuration = 0;
-      loadRequest.media.contentUrl = '';
-      loadRequest.media.contentId = '';
+        // Destroy previous
+        if (hlsInstance) {
+          hlsInstance.destroy();
+          hlsInstance = null;
+        }
 
-      return playbackConfig;
-    });
+        currentMediaInfo = media;
 
-    context.start({
-      supportedCommands:
-        cast.framework.messages.Command.ALL_BASIC_MEDIA |
-        cast.framework.messages.Command.SEEK |
-        cast.framework.messages.Command.PAUSE |
-        cast.framework.messages.Command.STREAM_VOLUME |
-        cast.framework.messages.Command.STREAM_MUTE
-    });
+        const hls = new Hls({
+          xhrSetup: (xhr) => {
+            xhr.setRequestHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+          }
+        });
+
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hlsInstance = hls;
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play();
+        });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            console.error('HLS error:', data.type, data.details);
+            hls.destroy();
+            hlsInstance = null;
+          }
+        });
+
+        // Don't let CAF handle loading - we do it ourselves
+        return null;
+      }
+    );
+
+    // Handle PAUSE from sender
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.PAUSE,
+      (requestData) => {
+        video.pause();
+        return null;
+      }
+    );
+
+    // Handle PLAY from sender
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.PLAY,
+      (requestData) => {
+        video.play();
+        return null;
+      }
+    );
+
+    // Handle SEEK from sender
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.SEEK,
+      (requestData) => {
+        if (requestData.currentTime != null) {
+          video.currentTime = requestData.currentTime;
+        }
+        return null;
+      }
+    );
+
+    // Handle STOP from sender
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.STOP,
+      (requestData) => {
+        if (hlsInstance) {
+          hlsInstance.destroy();
+          hlsInstance = null;
+        }
+        video.src = '';
+        video.load();
+        return null;
+      }
+    );
+
+    // Handle VOLUME from sender
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.SET_VOLUME,
+      (requestData) => {
+        if (requestData.volume) {
+          if (requestData.volume.level != null) {
+            video.volume = requestData.volume.level;
+          }
+          if (requestData.volume.muted != null) {
+            video.muted = requestData.volume.muted;
+          }
+        }
+        return null;
+      }
+    );
+
+    context.start();
   </script>
 </body>
 </html>
